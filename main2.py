@@ -1,4 +1,4 @@
-# pip install torch torchvision torchaudio transformers pillow opencv-python flask
+# pip install torch torchvision torchaudio transformers pillow opencv-python flask pywin32
 
 import cv2
 import time
@@ -6,6 +6,7 @@ import os
 import threading
 import smtplib
 import winsound
+import win32com.client  # ✅ Biblioteca para fala
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
@@ -19,7 +20,7 @@ from transformers import BlipProcessor, BlipForConditionalGeneration
 # 1. Configurações do e-mail
 # ==============================
 EMAIL_REMETENTE = "gyanlucasb@gmail.com"
-EMAIL_SENHA = "wgbb dicg qzlt romd"  # usar senha de app do Gmail
+EMAIL_SENHA = "wgbb dicg qzlt romd"  # senha de app do Gmail
 EMAIL_DESTINATARIO = "giansoares03@gmail.com"
 
 # ==============================
@@ -66,12 +67,25 @@ def enviar_email(filename, caption):
         print(f"❌ Erro ao enviar e-mail: {e}")
 
 # ==============================
-# 4. Função de alerta
+# 4. Funções de alerta
 # ==============================
 def tocar_alarme():
-    for _ in range(5):  # toca 5 vezes
+    for _ in range(5):
         winsound.Beep(1000, 500)  # frequência 1000 Hz, duração 500 ms
 
+def alerta_voz():
+    try:
+        speaker = win32com.client.Dispatch("SAPI.SpVoice")
+        speaker.Volume = 100
+        speaker.Rate = 0
+        texto = "PERIGO! Foi detectado um foco de incêndio! Saiam da fábrica imediatamente!"
+        speaker.Speak(texto)
+    except Exception as e:
+        print(f"❌ Erro na fala: {e}")
+
+# ==============================
+# 5. Função de salvar e alertar
+# ==============================
 def save_photo(frame, caption):
     filename = datetime.now().strftime("capturas/fogo_%Y%m%d_%H%M%S.jpg")
     cv2.imwrite(filename, frame)
@@ -82,12 +96,13 @@ def save_photo(frame, caption):
     print("=============================================")
     detec_log.append(log_msg)
 
-    # Som e e-mail em threads paralelas
+    # Executa som, fala e e-mail em paralelo
     threading.Thread(target=tocar_alarme, daemon=True).start()
+    threading.Thread(target=alerta_voz, daemon=True).start()
     threading.Thread(target=enviar_email, args=(filename, caption), daemon=True).start()
 
 # ==============================
-# 5. Servidor Flask
+# 6. Servidor Flask
 # ==============================
 app = Flask(__name__)
 
@@ -102,13 +117,13 @@ def run_server():
     app.run(host="0.0.0.0", port=5000)
 
 # ==============================
-# 6. Thread para servidor
+# 7. Thread para servidor
 # ==============================
 server_thread = threading.Thread(target=run_server, daemon=True)
 server_thread.start()
 
 # ==============================
-# 7. Ativa a câmera
+# 8. Ativa a câmera
 # ==============================
 camera = cv2.VideoCapture(0)
 if not camera.isOpened():
@@ -118,7 +133,7 @@ if not camera.isOpened():
 print("✅ Câmera ativada. Pressione 'q' para sair.")
 
 # ==============================
-# 8. Loop principal
+# 9. Loop principal
 # ==============================
 while True:
     ret, frame = camera.read()
@@ -134,7 +149,7 @@ while True:
     output = model.generate(**inputs)
     caption = processor.decode(output[0], skip_special_tokens=True)
 
-    # Exibe legenda na tela
+    # Exibe legenda
     cv2.putText(frame, f"Legenda: {caption}", (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2, cv2.LINE_AA)
 
@@ -152,7 +167,7 @@ while True:
     time.sleep(1)
 
 # ==============================
-# 9. Finaliza
+# 10. Finaliza
 # ==============================
 camera.release()
 cv2.destroyAllWindows()

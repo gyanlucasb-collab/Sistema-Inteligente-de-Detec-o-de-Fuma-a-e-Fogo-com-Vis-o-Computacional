@@ -22,17 +22,17 @@ import cv2
 # ==================================================
 # 1. CONFIGURAÇÕES DE E-MAIL
 # ==================================================
-EMAIL_REMETENTE = "gyanlucasb@gmail.com"
-EMAIL_SENHA = "wgbb dicg qzlt romd"
-EMAIL_DESTINATARIO = "giansoares03@gmail.com"
+EMAIL_REMETENTE = "****"
+EMAIL_SENHA = "***"
+EMAIL_DESTINATARIO = "***"
 
-INTERVALO_EMAIL = 60
+INTERVALO_EMAIL = 180
 ultimo_email = 0
 
 # ==================================================
 # 2. CONFIGURAÇÕES BLYNK
 # ==================================================
-BLYNK_TOKEN = "nrJWcz502ksNlx-YR69ywYxu48vewpQy"
+BLYNK_TOKEN = "***"
 BLYNK_URL = "https://blynk.cloud/external/api"
 
 # ==================================================
@@ -41,6 +41,12 @@ BLYNK_URL = "https://blynk.cloud/external/api"
 PASTA_IMAGENS = "imagens_teste"
 os.makedirs("capturas", exist_ok=True)
 detec_log = []
+
+# Arquivo de tempo de processamento
+ARQUIVO_TEMPOS = "tempo_processamento.csv"
+with open(ARQUIVO_TEMPOS, "w", newline="", encoding="utf-8") as f:
+    writer = csv.writer(f)
+    writer.writerow(["Imagem", "Tempo_Processamento(segundos)"])
 
 # ==================================================
 # 4. CARREGAR MODELO BLIP
@@ -51,7 +57,7 @@ model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-capt
 print("✅ Modelo carregado com sucesso!\n")
 
 # ==================================================
-# 5. FUNÇÕES DE E-MAIL
+# 5. ENVIAR E-MAIL
 # ==================================================
 def enviar_email(filename, caption, tipo_alerta):
     global ultimo_email
@@ -106,7 +112,7 @@ def alerta_voz(mensagem):
         print(f"❌ Erro no alerta de voz: {e}")
 
 # ==================================================
-# 7. FUNÇÕES BLYNK
+# 7. BLYNK
 # ==================================================
 def enviar_blynk(vpin, valor):
     try:
@@ -119,7 +125,7 @@ def enviar_blynk(vpin, valor):
         print(f"❌ Erro no envio ao Blynk: {e}")
 
 # ==================================================
-# 8. CSV LOCAL
+# 8. CSV LOCAL DE EVENTOS
 # ==================================================
 ARQUIVO_REGISTRO = "registro_eventos.csv"
 
@@ -129,7 +135,7 @@ def registrar_local(status, caption, nome_arquivo=""):
         writer.writerow([datetime.now().strftime("%d/%m/%Y %H:%M:%S"), status, caption, nome_arquivo])
 
 # ==================================================
-# 9. SALVAR FOTO E ALERTAS
+# 9. FUNÇÃO DE ALERTA E FOTO
 # ==================================================
 def save_photo(frame, caption, tipo_alerta):
     filename = datetime.now().strftime("capturas/evento_%Y%m%d_%H%M%S.jpg")
@@ -166,14 +172,12 @@ PALAVRAS_FOGO = ["fire", "flame", "burn", "torch", "lighter"]
 PALAVRAS_FUMACA = ["smoke", "steam", "smog", "haze"]
 PALAVRAS_FAISCA = ["spark", "flash", "lightning", "glow", "electric arc"]
 
-# VARIÁVEIS DE TEMPO
-tempo_inicio_sistema = time.time()
-tempos_detectados = []
-primeiro_alerta_registrado = False
-
 for idx, caminho_img in enumerate(arquivos, start=1):
 
     caminho = os.path.join(PASTA_IMAGENS, caminho_img)
+
+    # 🔵 TEMPORIZADOR DE PROCESSAMENTO DA IMAGEM
+    start_process = time.time()
 
     try:
         image = Image.open(caminho).convert("RGB")
@@ -202,15 +206,6 @@ for idx, caminho_img in enumerate(arquivos, start=1):
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
     if tipo_alerta:
-
-        # Registrar tempo da detecção
-        tempo_evento = time.time() - tempo_inicio_sistema
-        tempos_detectados.append(tempo_evento)
-
-        if not primeiro_alerta_registrado:
-            print(f"⏱️ Tempo até a primeira detecção: {tempo_evento:.2f} segundos")
-            primeiro_alerta_registrado = True
-
         cor = (0, 0, 255) if "Fogo" in tipo_alerta else (0, 140, 255) if "Fumaça" in tipo_alerta else (255, 255, 0)
         cv2.putText(frame, f"{tipo_alerta} detectado!", (10, 100),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.9, cor, 3)
@@ -227,18 +222,20 @@ for idx, caminho_img in enumerate(arquivos, start=1):
         threading.Thread(target=enviar_blynk, args=("V1", "✅ Sistema Normal"), daemon=True).start()
         registrar_local("✅ Sistema Normal", caption)
 
+    # 🔵 TEMPO FINAL DE PROCESSAMENTO DA IMAGEM
+    tempo_process = time.time() - start_process
+    print(f"⏱️ Tempo de processamento da imagem: {tempo_process:.2f} segundos")
+
+    # 🔵 SALVAR TEMPO EM CSV
+    with open(ARQUIVO_TEMPOS, "a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow([caminho_img, f"{tempo_process:.4f}"])
+
     cv2.imshow("Análise de Imagens - Detecção", frame)
-    if cv2.waitKey(5000) & 0xFF == ord('q'):
+    if cv2.waitKey(4000) & 0xFF == ord('q'):
         break
 
 cv2.destroyAllWindows()
-
-# 🔵 CALCULAR MÉDIA FINAL
-if tempos_detectados:
-    media_tempo = sum(tempos_detectados) / len(tempos_detectados)
-    print(f"\n⏱️ Tempo médio até as detecções: {media_tempo:.2f} segundos")
-else:
-    print("\nℹ️ Nenhum alerta foi detectado.")
 
 # ==================================================
 # RESET FINAL DO BLYNK
@@ -248,4 +245,4 @@ enviar_blynk("V0", 0)
 enviar_blynk("V1", "✅ Sistema Normal")
 enviar_blynk("V2", "")
 
-print("\n📊 Análise concluída. Registros salvos em 'registro_eventos.csv' ✅")
+print("\n📊 Análise concluída. Tempos salvos em 'tempo_processamento.csv' e eventos em 'registro_eventos.csv' ✅")

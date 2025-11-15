@@ -8,8 +8,8 @@ Também envia alertas em tempo real via:
 
 Além disso, registra:
 
- -Fotos dos eventos detectados com legendas geradas pela IA;
- -Log de eventos em CSV;
- -Tempo de processamento de cada imagem;
+ - Fotos dos eventos detectados com legendas geradas pela IA;
+ - Log de eventos em CSV;
+ - Tempo de processamento de cada imagem;
 
  

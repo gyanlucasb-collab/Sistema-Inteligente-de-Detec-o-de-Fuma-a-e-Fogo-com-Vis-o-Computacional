@@ -1,12 +1,14 @@
+# pip install torch torchvision torchaudio transformers pillow flask requests pywin32 winsound opencv-python pandas
 
-import cv2
-import time
 import os
+import csv
+import time
 import threading
 import smtplib
 import winsound
 import requests
 import win32com.client
+import numpy as np
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
@@ -15,43 +17,59 @@ from email import encoders
 from flask import Flask
 from PIL import Image
 from transformers import BlipProcessor, BlipForConditionalGeneration
+import cv2
 
 # ==================================================
 # 1. CONFIGURAÇÕES DE E-MAIL
 # ==================================================
 EMAIL_REMETENTE = "gyanlucasb@gmail.com"
-EMAIL_SENHA = "wgbb dicg qzlt romd"  # senha de app do Gmail
+EMAIL_SENHA = "wgbb dicg qzlt romd"
 EMAIL_DESTINATARIO = "giansoares03@gmail.com"
 
+INTERVALO_EMAIL = 60
+ultimo_email = 0
+
 # ==================================================
-# 2. CONFIGURAÇÕES DO BLYNK (IoT)
+# 2. CONFIGURAÇÕES BLYNK
 # ==================================================
-BLYNK_TOKEN = "nrJWcz502ksNlx-YR69ywYxu48vewpQy"  
+BLYNK_TOKEN = "nrJWcz502ksNlx-YR69ywYxu48vewpQy"
 BLYNK_URL = "https://blynk.cloud/external/api"
 
 # ==================================================
-# 3. CARREGA MODELO BLIP (Legenda de imagem)
+# 3. CONFIGURAÇÕES DE ARQUIVOS
 # ==================================================
-processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
-model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
-
-# Pasta para salvar capturas
+PASTA_IMAGENS = "imagens_teste"
 os.makedirs("capturas", exist_ok=True)
-
-# Lista de logs
 detec_log = []
 
 # ==================================================
-# 4. ENVIO DE E-MAIL
+# 4. CARREGAR MODELO BLIP
 # ==================================================
-def enviar_email(filename, caption):
+print("🔄 Carregando modelo BLIP (pode demorar alguns segundos)...")
+processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
+model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
+print("✅ Modelo carregado com sucesso!\n")
+
+# ==================================================
+# 5. FUNÇÕES DE E-MAIL
+# ==================================================
+def enviar_email(filename, caption, tipo_alerta):
+    global ultimo_email
+    tempo_atual = time.time()
+
+    if tempo_atual - ultimo_email < INTERVALO_EMAIL:
+        print(f"📧 Aguardando intervalo mínimo de {INTERVALO_EMAIL}s para enviar novo e-mail.")
+        return
+
+    ultimo_email = tempo_atual
+
     try:
         msg = MIMEMultipart()
         msg["From"] = EMAIL_REMETENTE
         msg["To"] = EMAIL_DESTINATARIO
-        msg["Subject"] = "🔥 ALERTA: Chama detectada"
+        msg["Subject"] = f"⚠️ ALERTA: {tipo_alerta} detectado!"
 
-        corpo = f"Foi detectada uma chama!\nLegenda: {caption}\nArquivo: {filename}"
+        corpo = f"Foi detectado um evento: {tipo_alerta}\nLegenda: {caption}\nArquivo: {filename}"
         msg.attach(MIMEText(corpo, "plain"))
 
         with open(filename, "rb") as f:
@@ -72,138 +90,162 @@ def enviar_email(filename, caption):
         print(f"❌ Erro ao enviar e-mail: {e}")
 
 # ==================================================
-# 5. FUNÇÕES DE ALERTA
+# 6. ALERTAS DE SOM E VOZ
 # ==================================================
 def tocar_alarme():
-    for _ in range(5):
-        winsound.Beep(1000, 500)
+    for _ in range(3):
+        winsound.Beep(1000, 400)
 
-def alerta_voz():
+def alerta_voz(mensagem):
     try:
         speaker = win32com.client.Dispatch("SAPI.SpVoice")
         speaker.Volume = 100
         speaker.Rate = 0
-        speaker.Speak("PERIGO! Foi detectado um foco de incêndio! Saiam da fábrica!")
+        speaker.Speak(mensagem)
     except Exception as e:
         print(f"❌ Erro no alerta de voz: {e}")
 
 # ==================================================
-# 6. CONEXÃO COM O BLYNK
+# 7. FUNÇÕES BLYNK
 # ==================================================
-def enviar_dados_iot(valor):
-    """Envia valor (0 ou 1) ao Blynk"""
+def enviar_blynk(vpin, valor):
     try:
-        r = requests.get(f"{BLYNK_URL}/update?token={BLYNK_TOKEN}&V0={valor}", timeout=5)
+        r = requests.get(f"{BLYNK_URL}/update?token={BLYNK_TOKEN}&{vpin}={valor}", timeout=5)
         if r.status_code == 200:
-            print(f"☁️ Valor {valor} enviado para Blynk (V0).")
+            print(f"☁️ {vpin} atualizado → {valor}")
         else:
-            print(f"⚠️ Falha ao enviar para IoT (status {r.status_code})")
+            print(f"⚠️ Erro ao enviar para {vpin} (status {r.status_code})")
     except Exception as e:
-        print(f"❌ Erro ao enviar para IoT: {e}")
-
-def ler_dado_iot():
-    """Lê o valor atual do Blynk"""
-    try:
-        r = requests.get(f"{BLYNK_URL}/get?token={BLYNK_TOKEN}&V0", timeout=5)
-        if r.status_code == 200:
-            return r.text.strip()
-        return f"Erro ({r.status_code})"
-    except Exception as e:
-        return f"Falha: {e}"
+        print(f"❌ Erro no envio ao Blynk: {e}")
 
 # ==================================================
-# 7. FUNÇÃO DE SALVAMENTO E ALERTAS
+# 8. CSV LOCAL
 # ==================================================
-def save_photo(frame, caption):
-    filename = datetime.now().strftime("capturas/fogo_%Y%m%d_%H%M%S.jpg")
-    cv2.imwrite(filename, frame)
+ARQUIVO_REGISTRO = "registro_eventos.csv"
 
-    log_msg = f"[{datetime.now().strftime('%H:%M:%S')}] Fogo detectado → {caption} (Foto: {filename})"
+def registrar_local(status, caption, nome_arquivo=""):
+    with open(ARQUIVO_REGISTRO, "a", newline="", encoding="utf-8") as file:
+        writer = csv.writer(file)
+        writer.writerow([datetime.now().strftime("%d/%m/%Y %H:%M:%S"), status, caption, nome_arquivo])
+
+# ==================================================
+# 9. SALVAR FOTO E ALERTAS
+# ==================================================
+def save_photo(frame, caption, tipo_alerta):
+    filename = datetime.now().strftime("capturas/evento_%Y%m%d_%H%M%S.jpg")
+    Image.fromarray(frame).save(filename)
+
+    horario = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    log_msg = f"[{horario}] ⚠️ {tipo_alerta} detectado → {caption} (Foto: {filename})"
     detec_log.append(log_msg)
-    print("\n🔥🔥🔥 ALERTA DE CHAMA DETECTADA 🔥🔥🔥")
+
+    print("\n🚨 ALERTA DETECTADO 🚨")
     print(log_msg)
-    print("=============================================")
 
-    # Aciona alertas simultâneos
     threading.Thread(target=tocar_alarme, daemon=True).start()
-    threading.Thread(target=alerta_voz, daemon=True).start()
-    threading.Thread(target=enviar_email, args=(filename, caption), daemon=True).start()
-    threading.Thread(target=enviar_dados_iot, args=(1,), daemon=True).start()  # Envia 1 para o Blynk
+    threading.Thread(target=alerta_voz, args=(f"Atenção! {tipo_alerta} detectado!",), daemon=True).start()
+    threading.Thread(target=enviar_email, args=(filename, caption, tipo_alerta), daemon=True).start()
 
-# ==================================================
-# 8. SERVIDOR FLASK PARA MONITORAMENTO LOCAL
-# ==================================================
-app = Flask(__name__)
+    threading.Thread(target=enviar_blynk, args=("V0", 1), daemon=True).start()
+    threading.Thread(target=enviar_blynk, args=("V1", f"⚠️ {tipo_alerta} detectado!"), daemon=True).start()
+    threading.Thread(target=enviar_blynk, args=("V2", horario), daemon=True).start()
 
-@app.route("/")
-def index():
-    logs_html = "<br>".join(detec_log[-10:]) if detec_log else "Nenhuma chama detectada 🔍"
-    valor_blynk = ler_dado_iot()
-    return f"""
-    <h1>🔥 Sistema de Detecção de Fogo com IoT (Blynk) 🔥</h1>
-    <h3>Últimos alertas:</h3>
-    <p>{logs_html}</p>
-    <h3>📡 Valor atual no Blynk (V0): {valor_blynk}</h3>
-    <p><a href="https://blynk.cloud/dashboard" target="_blank">Abrir painel Blynk</a></p>
-    """
-
-def run_server():
-    app.run(host="0.0.0.0", port=5000)
-
-threading.Thread(target=run_server, daemon=True).start()
-
-# ==================================================
-# 9. ATIVAÇÃO DA CÂMERA
-# ==================================================
-camera = cv2.VideoCapture(0)
-if not camera.isOpened():
-    print("❌ Câmera não identificada")
-    exit()
-
-print("✅ Câmera ativada. Pressione 'q' para sair.")
+    registrar_local(f"⚠️ {tipo_alerta} detectado", caption, filename)
 
 # ==================================================
 # 10. LOOP PRINCIPAL
 # ==================================================
-ultimo_envio = time.time()
-intervalo_envio = 10       # intervalo padrão em segundos
-intervalo_pos_fogo = 25    # intervalo após detectar fogo
+if not os.path.isdir(PASTA_IMAGENS):
+    raise SystemExit(f"Pasta '{PASTA_IMAGENS}' não encontrada.")
 
-while True:
-    ret, frame = camera.read()
-    if not ret:
-        print("❌ Erro ao capturar imagem")
+arquivos = sorted(os.listdir(PASTA_IMAGENS))
+total_imgs = len(arquivos)
+print(f"📸 {total_imgs} imagens encontradas na pasta '{PASTA_IMAGENS}'\n")
+
+PALAVRAS_FOGO = ["fire", "flame", "burn", "torch", "lighter"]
+PALAVRAS_FUMACA = ["smoke", "steam", "smog", "haze"]
+PALAVRAS_FAISCA = ["spark", "flash", "lightning", "glow", "electric arc"]
+
+# VARIÁVEIS DE TEMPO
+tempo_inicio_sistema = time.time()
+tempos_detectados = []
+primeiro_alerta_registrado = False
+
+for idx, caminho_img in enumerate(arquivos, start=1):
+
+    caminho = os.path.join(PASTA_IMAGENS, caminho_img)
+
+    try:
+        image = Image.open(caminho).convert("RGB")
+        inputs = processor(image, return_tensors="pt")
+        output = model.generate(**inputs)
+        caption = processor.decode(output[0], skip_special_tokens=True)
+    except Exception as e:
+        print(f"❌ Erro ao processar {caminho}: {e}")
+        continue
+
+    caption_lower = caption.lower()
+    frame = np.array(image)
+
+    tipo_alerta = None
+    if any(p in caption_lower for p in PALAVRAS_FOGO):
+        tipo_alerta = "🔥 Fogo"
+    elif any(p in caption_lower for p in PALAVRAS_FUMACA):
+        tipo_alerta = "💨 Fumaça"
+    elif any(p in caption_lower for p in PALAVRAS_FAISCA):
+        tipo_alerta = "⚡ Faísca"
+
+    progresso = f"Imagem {idx}/{total_imgs}"
+    cv2.putText(frame, progresso, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+    cv2.putText(frame, f"Legenda: {caption}", (10, 60),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
+    if tipo_alerta:
+
+        # Registrar tempo da detecção
+        tempo_evento = time.time() - tempo_inicio_sistema
+        tempos_detectados.append(tempo_evento)
+
+        if not primeiro_alerta_registrado:
+            print(f"⏱️ Tempo até a primeira detecção: {tempo_evento:.2f} segundos")
+            primeiro_alerta_registrado = True
+
+        cor = (0, 0, 255) if "Fogo" in tipo_alerta else (0, 140, 255) if "Fumaça" in tipo_alerta else (255, 255, 0)
+        cv2.putText(frame, f"{tipo_alerta} detectado!", (10, 100),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, cor, 3)
+
+        print(f"🚨 [{idx}/{total_imgs}] {caption} → {tipo_alerta} detectado!")
+        save_photo(frame, caption, tipo_alerta)
+
+    else:
+        cv2.putText(frame, "✅ SISTEMA NORMAL", (10, 100),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 3)
+
+        print(f"✅ [{idx}/{total_imgs}] {caption} → Sistema Normal.")
+        threading.Thread(target=enviar_blynk, args=("V0", 0), daemon=True).start()
+        threading.Thread(target=enviar_blynk, args=("V1", "✅ Sistema Normal"), daemon=True).start()
+        registrar_local("✅ Sistema Normal", caption)
+
+    cv2.imshow("Análise de Imagens - Detecção", frame)
+    if cv2.waitKey(5000) & 0xFF == ord('q'):
         break
 
-    img_path = "temp.jpg"
-    cv2.imwrite(img_path, frame)
-
-    image = Image.open(img_path).convert("RGB")
-    inputs = processor(image, return_tensors="pt")
-    output = model.generate(**inputs)
-    caption = processor.decode(output[0], skip_special_tokens=True)
-
-    cv2.putText(frame, f"Legenda: {caption}", (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2, cv2.LINE_AA)
-
-    fogo_detectado = any(palavra in caption.lower() for palavra in ["fire", "flame", "candle", "torch", "lighter"])
-
-    # Atualiza Blynk de tempos em tempos
-    tempo_atual = time.time()
-    if tempo_atual - ultimo_envio >= intervalo_envio:
-        if fogo_detectado:
-            save_photo(frame, caption)
-            cv2.putText(frame, "🔥 ALERTA: CHAMA DETECTADA 🔥", (10, 60),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3, cv2.LINE_AA)
-            intervalo_envio = intervalo_pos_fogo  # espera mais após fogo
-        else:
-            threading.Thread(target=enviar_dados_iot, args=(0,), daemon=True).start()
-            intervalo_envio = 10  # volta ao padrão se está tudo normal
-        ultimo_envio = tempo_atual
-
-    cv2.imshow("Detecção de Fogo (Q para sair)", frame)
-    if cv2.waitKey(1) & 0xFF == ord("q"):
-        break
-
-camera.release()
 cv2.destroyAllWindows()
+
+# 🔵 CALCULAR MÉDIA FINAL
+if tempos_detectados:
+    media_tempo = sum(tempos_detectados) / len(tempos_detectados)
+    print(f"\n⏱️ Tempo médio até as detecções: {media_tempo:.2f} segundos")
+else:
+    print("\nℹ️ Nenhum alerta foi detectado.")
+
+# ==================================================
+# RESET FINAL DO BLYNK
+# ==================================================
+print("🔄 Resetando status do Blynk ao finalizar...")
+enviar_blynk("V0", 0)
+enviar_blynk("V1", "✅ Sistema Normal")
+enviar_blynk("V2", "")
+
+print("\n📊 Análise concluída. Registros salvos em 'registro_eventos.csv' ✅")
